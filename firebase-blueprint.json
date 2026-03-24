@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and balance",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "telegramId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "balance": { "type": "number" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "balance"]
+    },
+    "GameRound": {
+      "title": "Game Round",
+      "description": "History of game rounds",
+      "type": "object",
+      "properties": {
+        "roundId": { "type": "string" },
+        "dice": { "type": "array", "items": { "type": "integer" } },
+        "result": { "type": "string", "enum": ["tai", "xiu"] },
+        "total": { "type": "integer" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "jackpotWon": { "type": "boolean" }
+      },
+      "required": ["roundId", "dice", "result", "total", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile data"
+    },
+    "/history/{roundId}": {
+      "schema": "GameRound",
+      "description": "Game round history"
+    }
+  }
+}
