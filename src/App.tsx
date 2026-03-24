@@ -147,6 +147,13 @@ export default function App() {
           if (docSnap.exists()) {
             const data = docSnap.data() as UserProfile;
             setProfile(data);
+            
+            // Update telegramId if missing but available via WebApp
+            const currentTgId = WebApp.initDataUnsafe.user?.id?.toString();
+            if (currentTgId && data.telegramId !== currentTgId) {
+              updateDoc(userRef, { telegramId: currentTgId }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${u.uid}`));
+            }
+
             // Auto-set admin for the specific email
             if (u.email === 'nminhtan89@gmail.com' && data.role !== 'admin') {
               updateDoc(userRef, { role: 'admin' }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${u.uid}`));
@@ -518,6 +525,11 @@ export default function App() {
           <button onClick={() => setIsMusicMuted(!isMusicMuted)} className="p-2 bg-slate-800/50 rounded-lg text-slate-400 hover:text-white transition-colors" title="Nhạc nền">
             {isMusicMuted ? <Music size={18} className="opacity-40" /> : <Music size={18} className="text-pink-500" />}
           </button>
+          {profile?.telegramId && (
+            <div className="p-2 bg-blue-500/10 rounded-lg text-blue-400" title="Đã liên kết Telegram">
+              <Send size={18} className="-rotate-45" />
+            </div>
+          )}
           <button onClick={() => setIsMuted(!isMuted)} className="p-2 bg-slate-800/50 rounded-lg text-slate-400 hover:text-white transition-colors" title="Âm thanh game">
             {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
           </button>
@@ -824,6 +836,21 @@ export default function App() {
                   <p className="text-blue-200 text-xs font-bold uppercase tracking-widest mb-2">Số dư khả dụng</p>
                   <h3 className="text-4xl font-mono font-black text-white">{profile?.balance.toLocaleString()} <span className="text-lg">VNĐ</span></h3>
                 </div>
+
+                {!profile?.telegramId && (
+                  <div className="bg-blue-500/10 p-6 rounded-[2.5rem] border border-blue-500/20 flex items-center justify-between">
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-bold text-blue-400">Liên kết Telegram</h4>
+                      <p className="text-[10px] text-slate-400">Nhận thông báo và kiểm tra số dư nhanh</p>
+                    </div>
+                    <button 
+                      onClick={() => window.open(`https://t.me/${import.meta.env.VITE_TELEGRAM_BOT_USERNAME || 'your_bot_username'}?start=link`, '_blank')}
+                      className="px-4 py-2 bg-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-500/20"
+                    >
+                      Liên kết
+                    </button>
+                  </div>
+                )}
 
                 <div id="deposit-instructions" className="bg-slate-900/60 p-6 rounded-[2.5rem] border border-white/5 space-y-4">
                   <h3 className="font-black italic uppercase text-sm text-blue-400">Hướng dẫn nạp tiền</h3>

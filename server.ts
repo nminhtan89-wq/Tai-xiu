@@ -5,12 +5,66 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GameStatus } from './src/types';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, serverTimestamp, doc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, serverTimestamp, doc, onSnapshot, query, where, getDocs, updateDoc } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
 import { VirtualConfig } from './src/types';
+import TelegramBot from 'node-telegram-bot-api';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const APP_URL = process.env.APP_URL;
+
+let bot: TelegramBot | null = null;
+
+if (TELEGRAM_BOT_TOKEN) {
+  bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
+  if (APP_URL) {
+    bot.setWebHook(`${APP_URL}/api/telegram-webhook`);
+    console.log('Telegram Webhook set to:', `${APP_URL}/api/telegram-webhook`);
+  } else {
+    bot.startPolling();
+    console.log('Telegram Bot started with polling (APP_URL missing)');
+  }
+
+  bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const text = `Chào mừng ${msg.from?.first_name} đến với Tài Xỉu Realtime! 🎲\n\nBạn có thể chơi game trực tiếp tại: ${APP_URL}\nSử dụng /balance để kiểm tra số dư.`;
+    bot?.sendMessage(chatId, text, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'Chơi ngay 🎮', web_app: { url: APP_URL || '' } }]
+        ]
+      }
+    });
+  });
+
+  bot.onText(/\/balance/, async (msg) => {
+    const chatId = msg.chat.id;
+    const telegramId = msg.from?.id.toString();
+
+    if (!telegramId) return;
+
+    try {
+      const q = query(collection(db, 'users'), where('telegramId', '==', telegramId));
+      const snap = await getDocs(q);
+
+      if (snap.empty) {
+        bot?.sendMessage(chatId, 'Tài khoản của bạn chưa được liên kết. Hãy mở game từ Telegram để tự động liên kết!');
+      } else {
+        const profile = snap.docs[0].data();
+        bot?.sendMessage(chatId, `Số dư của bạn: ${profile.balance.toLocaleString()} VNĐ`);
+      }
+    } catch (error) {
+      console.error('Error fetching balance via Telegram:', error);
+      bot?.sendMessage(chatId, 'Có lỗi xảy ra khi kiểm tra số dư.');
+    }
+  });
+}
 
 let virtualConfig: VirtualConfig = {
   enabled: true,
@@ -30,6 +84,16 @@ onSnapshot(doc(db, 'settings', 'virtual'), (snapshot) => {
 
 const PORT = 3000;
 const app = express();
+app.use(express.json()); // Add this to parse JSON bodies
+
+// Telegram Webhook Endpoint
+app.post('/api/telegram-webhook', (req, res) => {
+  if (bot) {
+    bot.processUpdate(req.body);
+  }
+  res.sendStatus(200);
+});
+
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
