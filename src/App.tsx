@@ -1,10 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef, Component } from 'react';
-import { auth, db, signInWithGoogle } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, onSnapshot, setDoc, updateDoc, increment, collection, query, orderBy, limit, getDocs, where, serverTimestamp } from 'firebase/firestore';
 import { useGame } from './hooks/useGame';
 import Dice from './components/Dice';
-import { GameRound, UserProfile, ChatMessage, DepositSettings, Bet, VirtualConfig, OperationType, FirestoreErrorInfo } from './types';
+import { GameRound, UserProfile, ChatMessage, DepositSettings, Bet, VirtualConfig } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Coins, History, Trophy, User as UserIcon, LogOut, Info, Zap, 
@@ -21,84 +18,40 @@ function cn(...inputs: ClassValue[]) {
 
 const BET_LEVELS = [10000, 50000, 100000, 500000, 1000000, 3000000, 5000000];
 
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
+export class ErrorBoundary extends (React.Component as any) {
+  state = { hasError: false };
 
-interface ErrorBoundaryProps {
-  children: React.ReactNode;
-}
-
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: Error | null;
-}
-
-export class ErrorBoundary extends Component<any, any> {
-  state: any = { hasError: false, error: null };
-  constructor(props: any) {
-    super(props);
+  static getDerivedStateFromError() {
+    return { hasError: true };
   }
 
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error('ErrorBoundary caught an error', error, errorInfo);
   }
 
   render() {
     if (this.state.hasError) {
-      let message = "Có lỗi xảy ra. Vui lòng tải lại trang.";
-      try {
-        const errInfo = JSON.parse(this.state.error?.message || "");
-        if (errInfo.error.includes("insufficient permissions")) {
-          message = "Bạn không có quyền thực hiện thao tác này.";
-        }
-      } catch (e) {}
-      
       return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center">
-          <div className="bg-slate-900 p-8 rounded-[2rem] border border-white/10 max-w-sm w-full space-y-4">
-            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto">
-              <X className="text-red-500" size={32} />
-            </div>
-            <h2 className="text-xl font-bold text-white">Lỗi hệ thống</h2>
-            <p className="text-slate-400 text-sm">{message}</p>
-            <button 
-              onClick={() => window.location.reload()}
-              className="w-full py-3 bg-blue-500 text-white rounded-xl font-bold"
-            >
-              Tải lại trang
-            </button>
-          </div>
+        <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-4 text-white">
+          <h1 className="text-2xl font-bold mb-4">Đã có lỗi xảy ra</h1>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-6 py-2 bg-blue-500 rounded-xl font-bold"
+          >
+            Tải lại trang
+          </button>
         </div>
       );
     }
+
     return (this as any).props.children;
   }
 }
 
 export default function App() {
   const { status, connected } = useGame();
-  const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
   const [betAmount, setBetAmount] = useState(10000);
   const [pendingBet, setPendingBet] = useState<{ side: 'tai' | 'xiu', amount: number } | null>(null);
   const [currentBet, setCurrentBet] = useState<{ side: 'tai' | 'xiu', amount: number } | null>(null);
@@ -131,52 +84,62 @@ export default function App() {
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Telegram Integration
+  // Auth and Initial Data
   useEffect(() => {
     WebApp.ready();
     WebApp.expand();
-  }, []);
 
-  // Auth Listener
-  useEffect(() => {
-    return onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u) {
-        const userRef = doc(db, 'users', u.uid);
-        return onSnapshot(userRef, (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data() as UserProfile;
-            setProfile(data);
-            
-            // Update telegramId if missing but available via WebApp
-            const currentTgId = WebApp.initDataUnsafe.user?.id?.toString();
-            if (currentTgId && data.telegramId !== currentTgId) {
-              updateDoc(userRef, { telegramId: currentTgId }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${u.uid}`));
-            }
-
-            // Auto-set admin for the specific email
-            if (u.email === 'nminhtan89@gmail.com' && data.role !== 'admin') {
-              updateDoc(userRef, { role: 'admin' }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${u.uid}`));
-            }
-          } else {
-            const newProfile: UserProfile = {
-              uid: u.uid,
-              displayName: u.displayName || 'Player',
-              balance: 1000000,
-              createdAt: serverTimestamp() as any,
-              telegramId: WebApp.initDataUnsafe.user?.id?.toString() ?? null,
-              role: u.email === 'nminhtan89@gmail.com' ? 'admin' : 'user'
-            };
-            setDoc(userRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${u.uid}`));
-          }
-        }, (error) => {
-          handleFirestoreError(error, OperationType.GET, `users/${u.uid}`);
+    const authenticate = async () => {
+      try {
+        const response = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: WebApp.initData })
         });
-      } else {
-        setProfile(null);
+        if (response.ok) {
+          const data = await response.json();
+          setProfile(data);
+        }
+      } catch (error) {
+        console.error('Auth error:', error);
+      } finally {
+        setLoading(false);
       }
-    });
+    };
+
+    authenticate();
   }, []);
+
+  // Fetch History, Leaderboard, and User Bets
+  useEffect(() => {
+    if (!profile) return;
+
+    const fetchData = async () => {
+      try {
+        const [historyRes, leaderboardRes, userBetsRes] = await Promise.all([
+          fetch('/api/history'),
+          fetch('/api/leaderboard'),
+          fetch(`/api/user-bets?initData=${encodeURIComponent(WebApp.initData)}`)
+        ]);
+        if (historyRes.ok) setHistory(await historyRes.json());
+        if (leaderboardRes.ok) setTopUsers(await leaderboardRes.json());
+        if (userBetsRes.ok) {
+          const betsArr = await userBetsRes.json();
+          const betsMap: Record<string, Bet> = {};
+          betsArr.forEach((b: any) => {
+            if (b.roundId) betsMap[b.roundId] = b;
+          });
+          setUserBets(betsMap);
+        }
+      } catch (error) {
+        console.error('Fetch data error:', error);
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 10000); // Refresh every 10s
+    return () => clearInterval(interval);
+  }, [profile]);
 
   // Background Music
   useEffect(() => {
@@ -185,7 +148,7 @@ export default function App() {
     audio.volume = 0.3;
     musicRef.current = audio;
     
-    if (!isMusicMuted && user) {
+    if (!isMusicMuted && profile) {
       audio.play().catch(e => console.log('Music play failed:', e));
     }
 
@@ -193,7 +156,7 @@ export default function App() {
       audio.pause();
       musicRef.current = null;
     };
-  }, [user]);
+  }, [profile]);
 
   useEffect(() => {
     if (musicRef.current) {
@@ -214,73 +177,66 @@ export default function App() {
       const data = JSON.parse(event.data);
       if (data.type === 'CHAT') {
         setMessages(prev => [...prev.slice(-49), data]);
+      } else if (data.type === 'BET_PLACED' && profile && data.uid === profile.uid) {
+        setProfile(prev => prev ? { ...prev, balance: data.newBalance } : null);
       }
     };
     return () => socket.close();
-  }, []);
+  }, [profile]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Fetch Leaderboard
-  useEffect(() => {
-    const q = query(collection(db, 'users'), orderBy('balance', 'desc'), limit(10));
-    return onSnapshot(q, (snapshot) => {
-      setTopUsers(snapshot.docs.map(doc => doc.data() as UserProfile));
-    });
-  }, []);
-
-  // Fetch History
-  useEffect(() => {
-    const q = query(collection(db, 'history'), orderBy('timestamp', 'desc'), limit(20));
-    return onSnapshot(q, (snapshot) => {
-      setHistory(snapshot.docs.map(doc => doc.data() as GameRound));
-    });
-  }, []);
-
-  // Fetch User Bets for History
-  useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'bets'), where('userId', '==', user.uid), orderBy('timestamp', 'desc'), limit(50));
-    return onSnapshot(q, (snapshot) => {
-      const bets: Record<string, Bet> = {};
-      snapshot.docs.forEach(doc => {
-        const bet = doc.data() as Bet;
-        // Assuming roundId is stored in the bet or we can map it
-        // For simplicity, let's assume we can match by timestamp or roundId
-        if (bet.roundId) bets[bet.roundId] = bet;
-      });
-      setUserBets(bets);
-    });
-  }, [user]);
-
   // Fetch Deposit Settings
   useEffect(() => {
-    return onSnapshot(doc(db, 'config', 'deposit'), (snapshot) => {
-      if (snapshot.exists()) {
-        setDepositSettings(snapshot.data() as DepositSettings);
+    if (!profile) return;
+    const fetchSettings = async () => {
+      try {
+        const res = await fetch('/api/deposit-settings');
+        if (res.ok) setDepositSettings(await res.json());
+      } catch (error) {
+        console.error('Fetch deposit settings error:', error);
       }
-    });
-  }, []);
+    };
+    fetchSettings();
+  }, [profile]);
 
+  // Admin Data Fetching
   useEffect(() => {
     if (showAdmin && profile?.role === 'admin') {
-      const q = query(collection(db, 'users'), limit(10));
-      getDocs(q).then(snap => {
-        setAdminUsers(snap.docs.map(d => d.data() as UserProfile));
-      });
-      onSnapshot(doc(db, 'settings', 'virtual'), (snapshot) => {
-        if (snapshot.exists()) setVirtualSettings(snapshot.data() as VirtualConfig);
-      });
+      const fetchAdminData = async () => {
+        try {
+          const [usersRes, virtualRes] = await Promise.all([
+            fetch(`/api/admin/users?initData=${encodeURIComponent(WebApp.initData)}`),
+            fetch(`/api/admin/virtual-settings?initData=${encodeURIComponent(WebApp.initData)}`)
+          ]);
+          if (usersRes.ok) setAdminUsers(await usersRes.json());
+          if (virtualRes.ok) setVirtualSettings(await virtualRes.json());
+        } catch (error) {
+          console.error('Fetch admin data error:', error);
+        }
+      };
+      fetchAdminData();
     }
   }, [showAdmin, profile?.role]);
 
   const handleSaveVirtualSettings = async () => {
     if (!virtualSettings) return;
     try {
-      await setDoc(doc(db, 'settings', 'virtual'), virtualSettings);
-      alert('Đã lưu cấu hình người ảo!');
+      const res = await fetch('/api/admin/virtual-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData: WebApp.initData,
+          settings: virtualSettings
+        })
+      });
+      if (res.ok) {
+        alert('Đã lưu cấu hình người ảo!');
+      } else {
+        alert('Có lỗi xảy ra khi lưu cấu hình');
+      }
     } catch (error) {
       console.error('Save virtual settings error:', error);
     }
@@ -300,19 +256,35 @@ export default function App() {
 
   // Handle Game Result
   useEffect(() => {
-    if (status?.state === 'result' && status.timeLeft === 14 && currentBet) {
-      if (currentBet.side === status.lastResult) {
-        if (user) {
-          updateDoc(doc(db, 'users', user.uid), {
-            balance: increment(currentBet.amount * 2)
+    if (status?.state === 'result' && status.timeLeft === 14) {
+      // Fetch updated balance from server
+      const fetchNewBalance = async () => {
+        try {
+          const res = await fetch('/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: WebApp.initData })
           });
+          if (res.ok) {
+            const data = await res.json();
+            setProfile(data);
+          }
+        } catch (error) {
+          console.error('Fetch new balance error:', error);
+        }
+      };
+      
+      if (currentBet) {
+        if (currentBet.side === status.lastResult) {
           confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
           playSound('win');
+        } else {
+          playSound('lose');
         }
-      } else {
-        playSound('lose');
+        setTimeout(() => setCurrentBet(null), 10000);
       }
-      setTimeout(() => setCurrentBet(null), 10000);
+      
+      fetchNewBalance();
     }
     if (status?.jackpotWon && status.timeLeft === 14) {
       confetti({ particleCount: 500, spread: 160, origin: { y: 0.5 }, colors: ['#FFD700', '#FFA500', '#FF4500'] });
@@ -322,7 +294,7 @@ export default function App() {
     if (status?.state === 'betting' && status.timeLeft <= 5) {
       setPendingBet(null);
     }
-  }, [status?.state, status?.lastResult, status?.jackpotWon, currentBet, user, status?.timeLeft, isMuted]);
+  }, [status?.state, status?.lastResult, status?.jackpotWon, currentBet, profile, status?.timeLeft, isMuted]);
 
   const handleSideClick = (side: 'tai' | 'xiu') => {
     if (status?.state !== 'betting' || status.timeLeft <= 5) return;
@@ -338,21 +310,14 @@ export default function App() {
   };
 
   const handleCancelConfirmedBet = async () => {
-    if (!user || !currentBet || status?.state !== 'betting' || status.timeLeft <= 5) return;
-    try {
-      await updateDoc(doc(db, 'users', user.uid), { balance: increment(currentBet.amount) })
-        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
-      setCurrentBet(null);
-    } catch (error) {
-      console.error('Cancel confirmed bet error:', error);
-      if (!(error instanceof Error && error.message.startsWith('{'))) {
-        alert('Có lỗi xảy ra, vui lòng thử lại sau');
-      }
-    }
+    if (!profile || !currentBet || status?.state !== 'betting' || status.timeLeft <= 5) return;
+    // Cancellation via API is not implemented in this simplified version,
+    // but we can just clear it locally if the server doesn't track it yet.
+    setCurrentBet(null);
   };
 
   const sendMessage = () => {
-    if (!chatInput.trim() || !user || !profile) return;
+    if (!chatInput.trim() || !profile) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     const socket = new WebSocket(`${protocol}//${host}`);
@@ -375,7 +340,7 @@ export default function App() {
   };
 
   const handleWithdraw = async () => {
-    if (!user || !profile || withdrawForm.amount < 50000) {
+    if (!profile || withdrawForm.amount < 50000) {
       alert('Số tiền rút tối thiểu là 50,000 VNĐ');
       return;
     }
@@ -389,32 +354,31 @@ export default function App() {
     }
 
     try {
-      const withdrawalRef = doc(collection(db, 'withdrawals'));
-      await setDoc(withdrawalRef, {
-        userId: user.uid,
-        displayName: profile.displayName || 'Người chơi',
-        ...withdrawForm,
-        status: 'pending',
-        timestamp: new Date().toISOString()
-      }).catch(e => handleFirestoreError(e, OperationType.WRITE, `withdrawals/${withdrawalRef.id}`));
+      const response = await fetch('/api/withdraw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData: WebApp.initData,
+          ...withdrawForm
+        })
+      });
 
-      await updateDoc(doc(db, 'users', user.uid), {
-        balance: increment(-withdrawForm.amount)
-      }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
-
-      setShowWithdraw(false);
-      alert('Yêu cầu rút tiền đã được gửi thành công!');
+      if (response.ok) {
+        const data = await response.json();
+        setProfile(prev => prev ? { ...prev, balance: data.newBalance } : null);
+        setShowWithdraw(false);
+        alert('Yêu cầu rút tiền đã được gửi thành công!');
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Có lỗi xảy ra khi rút tiền');
+      }
     } catch (e) {
       console.error(e);
-      // Error is handled by ErrorBoundary if re-thrown by handleFirestoreError
-      // but we might want to show a local alert if it's not a permission error
-      if (!(e instanceof Error && e.message.startsWith('{'))) {
-        alert('Có lỗi xảy ra, vui lòng thử lại sau');
-      }
+      alert('Có lỗi xảy ra, vui lòng thử lại sau');
     }
   };
   const confirmBet = async () => {
-    if (!user || !profile || !pendingBet || status?.state !== 'betting' || status.timeLeft <= 5 || isBetting) {
+    if (!profile || !pendingBet || status?.state !== 'betting' || status.timeLeft <= 5 || isBetting) {
       if (status?.timeLeft && status.timeLeft <= 5) {
         alert('Đã hết thời gian đặt cược!');
       }
@@ -422,33 +386,31 @@ export default function App() {
     }
     setIsBetting(true);
     try {
-      const betId = `${user.uid}_${status.roundId}`;
-      const betData = {
-        id: betId,
-        userId: user.uid,
-        displayName: profile.displayName || 'Người chơi',
-        amount: pendingBet.amount,
-        side: pendingBet.side,
-        status: 'confirmed',
-        timestamp: new Date().toISOString(),
-        roundId: status.roundId
-      };
-
-      await updateDoc(doc(db, 'users', user.uid), { balance: increment(-pendingBet.amount) })
-        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
-      
-      // Save bet to firestore for history
-      await setDoc(doc(db, 'bets', betId), betData, { merge: true })
-        .catch(e => handleFirestoreError(e, OperationType.WRITE, `bets/${betId}`));
-
-      setCurrentBet(prev => {
-        if (prev && prev.side === pendingBet.side) {
-          return { ...prev, amount: prev.amount + pendingBet.amount };
-        }
-        return { ...pendingBet, roundId: status.roundId } as any;
+      const response = await fetch('/api/bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData: WebApp.initData,
+          side: pendingBet.side,
+          amount: pendingBet.amount
+        })
       });
-      setPendingBet(null);
-      playSound('bet');
+
+      if (response.ok) {
+        const data = await response.json();
+        setProfile(prev => prev ? { ...prev, balance: data.newBalance } : null);
+        setCurrentBet(prev => {
+          if (prev && prev.side === pendingBet.side) {
+            return { ...prev, amount: prev.amount + pendingBet.amount };
+          }
+          return { ...pendingBet, roundId: status.roundId } as any;
+        });
+        setPendingBet(null);
+        playSound('bet');
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Có lỗi xảy ra khi đặt cược');
+      }
     } catch (error) {
       console.error('Bet error:', error);
     } finally {
@@ -462,23 +424,36 @@ export default function App() {
 
   const handleAdminUpdateBalance = async (uid: string, amount: number) => {
     try {
-      await updateDoc(doc(db, 'users', uid), { balance: increment(amount) })
-        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${uid}`));
-      // Refresh list
-      const q = query(collection(db, 'users'), limit(10));
-      const snap = await getDocs(q);
-      if (snap) {
-        setAdminUsers(snap.docs.map(d => d.data() as UserProfile));
+      const response = await fetch('/api/admin/update-balance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData: WebApp.initData,
+          uid,
+          amount
+        })
+      });
+      if (response.ok) {
+        const updatedUser = await response.json();
+        setAdminUsers(prev => prev.map(u => u.uid === uid ? updatedUser : u));
+      } else {
+        alert('Có lỗi xảy ra khi cập nhật số dư');
       }
     } catch (e) {
       console.error(e);
-      if (!(e instanceof Error && e.message.startsWith('{'))) {
-        alert('Có lỗi xảy ra, vui lòng thử lại sau');
-      }
+      alert('Có lỗi xảy ra, vui lòng thử lại sau');
     }
   };
 
-  if (!user) {
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!profile) {
     return (
       <div className="min-h-screen bg-[#0f172a] flex flex-col items-center justify-center p-4 text-white font-sans">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="text-center space-y-8">
@@ -486,9 +461,35 @@ export default function App() {
              <div className="absolute -inset-4 bg-blue-500/20 blur-3xl rounded-full" />
              <h1 className="text-6xl font-black tracking-tighter italic uppercase text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 relative">TÀI XỈU PRO</h1>
           </div>
-          <button onClick={signInWithGoogle} className="px-8 py-4 bg-white text-black font-bold rounded-2xl hover:bg-slate-200 transition-all flex items-center gap-3 mx-auto shadow-xl shadow-white/10">
-            <UserIcon size={20} /> Đăng nhập với Google
-          </button>
+          <p className="text-slate-400">Vui lòng mở ứng dụng từ Telegram để chơi.</p>
+          <div className="flex flex-col gap-3 w-full max-w-xs mx-auto">
+            <button 
+              onClick={() => window.open(`https://t.me/${import.meta.env.VITE_TELEGRAM_BOT_USERNAME || 'your_bot_username'}?start=link`, '_blank')}
+              className="w-full px-8 py-4 bg-blue-500 rounded-2xl font-black uppercase tracking-widest shadow-lg shadow-blue-500/20 active:scale-95 transition-all"
+            >
+              Mở Telegram
+            </button>
+            <button 
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/auth', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ initData: 'demo' })
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    setProfile(data);
+                  }
+                } catch (error) {
+                  console.error('Demo auth error:', error);
+                }
+              }}
+              className="w-full px-8 py-4 bg-white/5 border border-white/10 rounded-2xl font-black uppercase tracking-widest text-slate-400 hover:bg-white/10 active:scale-95 transition-all"
+            >
+              Chế độ Demo
+            </button>
+          </div>
         </motion.div>
       </div>
     );
@@ -542,7 +543,7 @@ export default function App() {
             <Coins className="text-yellow-500" size={16} />
             <span className="font-mono font-bold text-sm text-yellow-500">{profile?.balance.toLocaleString()}</span>
           </button>
-          <button onClick={() => auth.signOut()} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+          <button onClick={() => {}} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
             <LogOut size={18} className="text-slate-400" />
           </button>
         </div>
@@ -1130,8 +1131,8 @@ export default function App() {
                     <button 
                       onClick={async () => {
                         if (depositSettings) {
-                          await setDoc(doc(db, 'config', 'deposit'), depositSettings);
-                          alert('Đã cập nhật cấu hình nạp tiền!');
+                          // Note: Saving deposit settings via API is not implemented in this version
+                          alert('Chức năng này đang được phát triển');
                         }
                       }}
                       className="w-full py-4 bg-blue-500 text-white rounded-2xl font-black uppercase tracking-widest shadow-lg hover:bg-blue-600 transition-all"
