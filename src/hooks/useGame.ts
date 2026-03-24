@@ -21,7 +21,7 @@ export const useGame = () => {
       if (data.type === 'INIT' || data.type === 'GAME_START' || data.type === 'GAME_RESULT') {
         setStatus(data);
       } else if (data.type === 'TICK') {
-        setStatus((prev) => prev ? { ...prev, timeLeft: data.timeLeft, state: data.state } : null);
+        setStatus((prev) => prev ? { ...prev, ...data } : null);
       }
     };
 

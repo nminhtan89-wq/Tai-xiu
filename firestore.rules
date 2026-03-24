@@ -55,6 +55,29 @@ service cloud.firestore {
                     request.resource.data.balance is number && request.resource.data.balance >= 0) || isAdmin();
     }
 
+    match /bets/{betId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid &&
+                    request.resource.data.keys().hasAll(['userId', 'amount', 'side', 'status', 'roundId', 'timestamp']) &&
+                    request.resource.data.amount is number && request.resource.data.amount > 0 &&
+                    request.resource.data.side in ['tai', 'xiu'] &&
+                    request.resource.data.status == 'confirmed';
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /config/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /withdrawals/{withdrawalId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid &&
+                    request.resource.data.status == 'pending';
+      allow update, delete: if isAdmin();
+    }
+
     function isValidHistory(data) {
       return data.keys().hasAll(['roundId', 'dice', 'result', 'total', 'timestamp']) &&
              data.roundId is string &&

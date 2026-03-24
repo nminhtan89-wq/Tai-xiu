@@ -1,10 +1,10 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useRef, Component } from 'react';
 import { auth, db, signInWithGoogle } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, updateDoc, increment, collection, query, orderBy, limit, getDocs, where, serverTimestamp } from 'firebase/firestore';
 import { useGame } from './hooks/useGame';
 import Dice from './components/Dice';
-import { GameRound, UserProfile, ChatMessage, DepositSettings, Bet, VirtualConfig } from './types';
+import { GameRound, UserProfile, ChatMessage, DepositSettings, Bet, VirtualConfig, OperationType, FirestoreErrorInfo } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Coins, History, Trophy, User as UserIcon, LogOut, Info, Zap, 
@@ -21,6 +21,80 @@ function cn(...inputs: ClassValue[]) {
 
 const BET_LEVELS = [10000, 50000, 100000, 500000, 1000000, 3000000, 5000000];
 
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+export class ErrorBoundary extends Component<any, any> {
+  state: any = { hasError: false, error: null };
+  constructor(props: any) {
+    super(props);
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let message = "Có lỗi xảy ra. Vui lòng tải lại trang.";
+      try {
+        const errInfo = JSON.parse(this.state.error?.message || "");
+        if (errInfo.error.includes("insufficient permissions")) {
+          message = "Bạn không có quyền thực hiện thao tác này.";
+        }
+      } catch (e) {}
+      
+      return (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center">
+          <div className="bg-slate-900 p-8 rounded-[2rem] border border-white/10 max-w-sm w-full space-y-4">
+            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto">
+              <X className="text-red-500" size={32} />
+            </div>
+            <h2 className="text-xl font-bold text-white">Lỗi hệ thống</h2>
+            <p className="text-slate-400 text-sm">{message}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-3 bg-blue-500 text-white rounded-xl font-bold"
+            >
+              Tải lại trang
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
+
 export default function App() {
   const { status, connected } = useGame();
   const [user, setUser] = useState<User | null>(null);
@@ -31,7 +105,8 @@ export default function App() {
   const [history, setHistory] = useState<GameRound[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showChat, setShowChat] = useState(false);
-  const [showJackpot, setShowJackpot] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [topUsers, setTopUsers] = useState<UserProfile[]>([]);
   const [showWallet, setShowWallet] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -74,7 +149,7 @@ export default function App() {
             setProfile(data);
             // Auto-set admin for the specific email
             if (u.email === 'nminhtan89@gmail.com' && data.role !== 'admin') {
-              updateDoc(userRef, { role: 'admin' });
+              updateDoc(userRef, { role: 'admin' }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${u.uid}`));
             }
           } else {
             const newProfile: UserProfile = {
@@ -85,8 +160,10 @@ export default function App() {
               telegramId: WebApp.initDataUnsafe.user?.id?.toString() ?? null,
               role: u.email === 'nminhtan89@gmail.com' ? 'admin' : 'user'
             };
-            setDoc(userRef, newProfile);
+            setDoc(userRef, newProfile).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${u.uid}`));
           }
+        }, (error) => {
+          handleFirestoreError(error, OperationType.GET, `users/${u.uid}`);
         });
       } else {
         setProfile(null);
@@ -96,7 +173,7 @@ export default function App() {
 
   // Background Music
   useEffect(() => {
-    const audio = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'); // High energy placeholder
+    const audio = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3'); // Gentler track
     audio.loop = true;
     audio.volume = 0.3;
     musicRef.current = audio;
@@ -138,6 +215,14 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Fetch Leaderboard
+  useEffect(() => {
+    const q = query(collection(db, 'users'), orderBy('balance', 'desc'), limit(10));
+    return onSnapshot(q, (snapshot) => {
+      setTopUsers(snapshot.docs.map(doc => doc.data() as UserProfile));
+    });
+  }, []);
 
   // Fetch History
   useEffect(() => {
@@ -248,10 +333,14 @@ export default function App() {
   const handleCancelConfirmedBet = async () => {
     if (!user || !currentBet || status?.state !== 'betting' || status.timeLeft <= 5) return;
     try {
-      await updateDoc(doc(db, 'users', user.uid), { balance: increment(currentBet.amount) });
+      await updateDoc(doc(db, 'users', user.uid), { balance: increment(currentBet.amount) })
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
       setCurrentBet(null);
     } catch (error) {
       console.error('Cancel confirmed bet error:', error);
+      if (!(error instanceof Error && error.message.startsWith('{'))) {
+        alert('Có lỗi xảy ra, vui lòng thử lại sau');
+      }
     }
   };
 
@@ -293,21 +382,28 @@ export default function App() {
     }
 
     try {
-      await setDoc(doc(collection(db, 'withdrawals')), {
+      const withdrawalRef = doc(collection(db, 'withdrawals'));
+      await setDoc(withdrawalRef, {
         userId: user.uid,
         displayName: profile.displayName || 'Người chơi',
         ...withdrawForm,
         status: 'pending',
         timestamp: new Date().toISOString()
-      });
+      }).catch(e => handleFirestoreError(e, OperationType.WRITE, `withdrawals/${withdrawalRef.id}`));
+
       await updateDoc(doc(db, 'users', user.uid), {
         balance: increment(-withdrawForm.amount)
-      });
+      }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
+
       setShowWithdraw(false);
       alert('Yêu cầu rút tiền đã được gửi thành công!');
     } catch (e) {
       console.error(e);
-      alert('Có lỗi xảy ra, vui lòng thử lại sau');
+      // Error is handled by ErrorBoundary if re-thrown by handleFirestoreError
+      // but we might want to show a local alert if it's not a permission error
+      if (!(e instanceof Error && e.message.startsWith('{'))) {
+        alert('Có lỗi xảy ra, vui lòng thử lại sau');
+      }
     }
   };
   const confirmBet = async () => {
@@ -331,10 +427,12 @@ export default function App() {
         roundId: status.roundId
       };
 
-      await updateDoc(doc(db, 'users', user.uid), { balance: increment(-pendingBet.amount) });
+      await updateDoc(doc(db, 'users', user.uid), { balance: increment(-pendingBet.amount) })
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
       
       // Save bet to firestore for history
-      await setDoc(doc(db, 'bets', betId), betData, { merge: true });
+      await setDoc(doc(db, 'bets', betId), betData, { merge: true })
+        .catch(e => handleFirestoreError(e, OperationType.WRITE, `bets/${betId}`));
 
       setCurrentBet(prev => {
         if (prev && prev.side === pendingBet.side) {
@@ -357,13 +455,19 @@ export default function App() {
 
   const handleAdminUpdateBalance = async (uid: string, amount: number) => {
     try {
-      await updateDoc(doc(db, 'users', uid), { balance: increment(amount) });
+      await updateDoc(doc(db, 'users', uid), { balance: increment(amount) })
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${uid}`));
       // Refresh list
       const q = query(collection(db, 'users'), limit(10));
       const snap = await getDocs(q);
-      setAdminUsers(snap.docs.map(d => d.data() as UserProfile));
+      if (snap) {
+        setAdminUsers(snap.docs.map(d => d.data() as UserProfile));
+      }
     } catch (e) {
       console.error(e);
+      if (!(e instanceof Error && e.message.startsWith('{'))) {
+        alert('Có lỗi xảy ra, vui lòng thử lại sau');
+      }
     }
   };
 
@@ -440,7 +544,7 @@ export default function App() {
         <button onClick={() => setShowChat(true)} className="p-3 hover:bg-white/5 rounded-2xl transition-all group">
           <MessageSquare size={20} className="text-emerald-400 group-hover:scale-110 transition-transform" />
         </button>
-        <button onClick={() => setShowJackpot(true)} className="p-3 hover:bg-white/5 rounded-2xl transition-all group">
+        <button onClick={() => setShowLeaderboard(true)} className="p-3 hover:bg-white/5 rounded-2xl transition-all group">
           <Trophy size={20} className="text-yellow-500 group-hover:scale-110 transition-transform" />
         </button>
         <button onClick={() => setShowWallet(true)} className="p-3 hover:bg-white/5 rounded-2xl transition-all group">
@@ -450,22 +554,22 @@ export default function App() {
 
       <main className="max-w-md mx-auto p-4 space-y-6 pb-32">
         {/* Game Area */}
-        <section className="relative bg-slate-900/40 rounded-[2.5rem] p-8 border border-white/5 shadow-2xl overflow-hidden">
+        <section className="relative bg-slate-900/40 rounded-[2.5rem] p-6 border border-white/5 shadow-2xl overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1 bg-white/5">
              <motion.div className="h-full bg-blue-500" initial={{ width: '100%' }} animate={{ width: `${(status?.timeLeft || 0) / (status?.state === 'betting' ? 45 : 15) * 100}%` }} transition={{ duration: 1, ease: "linear" }} />
           </div>
 
-          <div className="text-center space-y-6">
+          <div className="text-center space-y-4">
             <div className="space-y-1">
               <span className={cn("text-xs font-black tracking-[0.4em] uppercase", status?.timeLeft && status.timeLeft <= 5 && status.state === 'betting' ? "text-red-500" : "text-blue-400")}>
                 {status?.state === 'betting' ? (status.timeLeft <= 5 ? 'KHÓA CƯỢC' : 'Đang đặt cược') : 'Đang mở thưởng'}
               </span>
-              <h3 className={cn("text-7xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_15px_rgba(255,255,255,0.3)]", status?.timeLeft && status.timeLeft <= 10 && status.state === 'betting' && "text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]")}>
+              <h3 className={cn("text-5xl font-mono font-black text-white tabular-nums drop-shadow-[0_0_15px_rgba(255,255,255,0.3)]", status?.timeLeft && status.timeLeft <= 10 && status.state === 'betting' && "text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]")}>
                 00:{status?.timeLeft.toString().padStart(2, '0')}
               </h3>
             </div>
 
-            <div className="flex justify-center gap-6 py-8">
+            <div className="flex justify-center gap-6 py-4">
               {status?.state === 'result' ? (
                 status.lastDice.map((d, i) => <Dice key={i} value={d} rolling={false} />)
               ) : (
@@ -664,26 +768,43 @@ export default function App() {
             </motion.div>
           )}
 
-          {showJackpot && (
-            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-6">
-              <div className="w-full max-w-sm bg-slate-900 border border-yellow-500/30 rounded-[3rem] p-8 text-center space-y-6 relative overflow-hidden">
-                <div className="absolute -top-24 -left-24 w-48 h-48 bg-yellow-500/10 blur-3xl rounded-full" />
-                <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-orange-500/10 blur-3xl rounded-full" />
-                
-                <Trophy size={64} className="text-yellow-500 mx-auto drop-shadow-[0_0_15px_rgba(234,179,8,0.4)]" />
-                <div className="space-y-2">
-                  <h2 className="text-3xl font-black italic uppercase text-transparent bg-clip-text bg-gradient-to-b from-yellow-400 to-orange-600">Nổ Hũ Siêu Cấp</h2>
-                  <p className="text-slate-400 text-sm">Cơ hội trúng thưởng hàng tỷ đồng mỗi ngày!</p>
-                </div>
-
-                <div className="bg-black/40 p-6 rounded-[2rem] border border-white/5">
-                  <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40 mb-2">Giá trị hiện tại</p>
-                  <p className="text-4xl font-mono font-black text-yellow-500 tracking-tighter">1,234,567,890</p>
-                </div>
-
-                <button onClick={() => setShowJackpot(false)} className="w-full py-4 bg-white text-black font-black rounded-2xl hover:bg-slate-200 transition-all">
-                  ĐÓNG
-                </button>
+          {showLeaderboard && (
+            <motion.div initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }} className="fixed inset-0 z-[100] bg-[#020617] p-4 flex flex-col">
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="text-xl font-black italic uppercase">Bảng Xếp Hạng Đại Gia</h2>
+                <button onClick={() => setShowLeaderboard(false)} className="p-2 hover:bg-white/5 rounded-full"><X size={24} /></button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                {topUsers.map((u, index) => (
+                  <div key={u.uid} className={cn(
+                    "p-4 rounded-2xl border flex items-center justify-between transition-all",
+                    index === 0 ? "bg-yellow-500/10 border-yellow-500/30" : 
+                    index === 1 ? "bg-slate-300/10 border-slate-300/30" :
+                    index === 2 ? "bg-orange-500/10 border-orange-500/30" :
+                    "bg-slate-900/60 border-white/5"
+                  )}>
+                    <div className="flex items-center gap-4">
+                      <div className={cn(
+                        "w-10 h-10 rounded-xl flex items-center justify-center font-black text-lg italic shadow-lg",
+                        index === 0 ? "bg-yellow-500 text-black" :
+                        index === 1 ? "bg-slate-300 text-black" :
+                        index === 2 ? "bg-orange-500 text-black" :
+                        "bg-slate-800 text-white"
+                      )}>
+                        {index + 1}
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm">{u.displayName || 'Người chơi'}</p>
+                        <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">#{u.uid.slice(-6)}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-yellow-500 font-mono font-black">{u.balance.toLocaleString()}</p>
+                      <p className="text-[8px] text-slate-500 uppercase font-bold">VNĐ</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </motion.div>
           )}
